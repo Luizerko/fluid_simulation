@@ -8,19 +8,43 @@ struct Particle {
     position: Pos2,
     velocity: Vec2,
     radius: f32,
-    weight: f32,
+    mass: f32,
     color: Color32
 }
 
 // Physics trait
 trait Physics {
-    fn update(&mut self, dt: f32);
+    fn update(&mut self, dt: f32, bounds: egui::Rect);
 }
 
 // Implementing physics dynamics for the particles
 impl Physics for Particle {
-    fn update(&mut self, dt: f32) {
+    fn update(&mut self, dt: f32, bounds: egui::Rect) {
+        // Applying gravity
+        let g = 9.81;
+        self.velocity.y += self.mass * g * dt;
+
+        // Updating positions
         self.position += self.velocity*dt;
+
+        // Treating wall collisions (elastic for now)
+        if self.position.x < 0.0 {
+            self.velocity.x = -self.velocity.x;
+            self.position.x = self.radius;
+        }
+        else if self.position.x > bounds.width() {
+            self.velocity.x = -self.velocity.x;
+            self.position.x = bounds.width() - self.radius;
+        }
+        
+        if self.position.y < 0.0 {
+            self.velocity.y = -self.velocity.y;
+            self.position.y = self.radius;
+        }
+        else if self.position.y > bounds.height() {
+            self.velocity.y = -self.velocity.y;
+            self.position.y = bounds.height() - self.radius;
+        }
     }
 }
 
@@ -29,24 +53,48 @@ struct FluidSim {
     particles: Vec<Particle>
 }
 
-// Implementing particle generation
 impl FluidSim {
+    // Implementing particle generation
     fn generate_particles(count: usize) -> Vec<Particle> {
         let mut particles = Vec::with_capacity(count);
         let mut rng = thread_rng();
         
         for c in 0..count {
             let p = Particle {
-                position: Pos2::new(100.0 + c as f32 * 4.0, 100.0 + c as f32 * 4.0),
-                velocity: Vec2::new(10.0, 10.0),
+                position: Pos2::new(100.0 + c as f32 * 10.0, 100.0 + c as f32 * 10.0),
+                velocity: Vec2::new(100.0, 100.0),
                 radius: 5.0,
-                weight: 1.0,
+                mass: 10.0,
                 color: Color32::from_rgb(100, 100, 100)
             };
             particles.push(p);
         }
 
         particles
+    }
+
+    // Applying interactions with other particles
+    fn handle_collisions(&mut self) {
+        // Loop over all particles (we'll make this better, of course)
+        for i in 0..self.particles.len() {
+            for j in (i+1)..self.particles.len() {
+                let (p1, p2) = (&mut self.particles[i], &mut self.particles[j]);
+                
+                // Compute collisions based on distance between centers and radius
+                let delta = p1.position - p2.position;
+                let dist_sq = delta.x*delta.x + delta.y*delta.y;
+                let radii_sum = p1.radius + p2.radius;  
+                
+                // Check for collision
+                if dist_sq < radii_sum * radii_sum {
+                    // Get the distance (with no division by zero) and compute the unit vector (direction) between centers
+                    let dist = dist_sq.sqrt().max(0.0001);
+                    let n = delta / dist;
+
+                    
+                }
+            }
+        }
     }
 }
 
@@ -64,9 +112,12 @@ impl App for FluidSim {
             }
         });
 
+        // Getting window information to check corner cases on position updates
+        let window_size: egui::Rect = ctx.screen_rect();
+        
         // Updating positions
         for p in &mut self.particles {
-            p.update(dt);
+            p.update(dt, window_size);
         }
 
         // Breaking the reactive mode and running simulation at 30 FPS
