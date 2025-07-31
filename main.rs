@@ -62,7 +62,15 @@ impl Physics for Particle {
     }
 }
 
-// Datastructure for all particles in the fluid simulation
+// Data structure for spwan mode
+#[derive(PartialEq, Eq)]
+enum SpawnMode {
+    Point,
+    Region,
+    Flow
+}
+
+// Data structure for all particles in the fluid simulation
 struct FluidSim {
     particles: Vec<Particle>,
     default_radius: f32,
@@ -71,7 +79,10 @@ struct FluidSim {
     r: u8,
     g: u8,
     b: u8,
-    restitution: f32
+    restitution: f32,
+    spawn_mode: SpawnMode,
+    drag_start: Pos2,
+    drag_current: Pos2
 }
 
 impl FluidSim {
@@ -85,7 +96,10 @@ impl FluidSim {
             r: color.r(),
             g: color.g(),
             b: color.b(),
-            restitution,
+            restitution: restitution,
+            spawn_mode: SpawnMode::Point,
+            drag_start: Pos2::new(0.0, 0.0),
+            drag_current: Pos2::new(0.0, 0.0)
         }
     }
 
@@ -164,11 +178,17 @@ impl App for FluidSim {
 
         // Getting window information
         let window_size: egui::Rect = ctx.screen_rect();
-        
-        // Spawining points while clicking
+
+        // Spawning points
         let pointer = ctx.pointer_interact_pos();
-        if ctx.input(|i| i.pointer.primary_pressed()) {
-            if let Some(pos) = pointer {
+        let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
+        let primary_down = ctx.input(|i| i.pointer.primary_down());
+        let primary_released = ctx.input(|i| i.pointer.primary_released());
+
+        // Individually when clicking
+        if self.spawn_mode == SpawnMode::Point {
+            if primary_pressed {
+                if let Some(pos) = pointer {
                     self.particles.push(Particle {
                         position: Pos2::new(pos.x, pos.y),
                         velocity: Vec2::new(0.0, 0.0),
@@ -176,6 +196,59 @@ impl App for FluidSim {
                         mass: self.default_mass,
                         color: self.default_color,
                     });
+                }
+            }
+        }
+
+        // By region selection
+        else if self.spawn_mode == SpawnMode::Region {
+            // Starting mouse capture
+            if primary_pressed {
+                if let Some(pos) = pointer {
+                    self.drag_start = pos;
+                    self.drag_current = pos;
+                }
+            }
+
+            // Updating mouse position
+            if primary_down {
+                if let Some(pos) = pointer {
+                    self.drag_current = pos;
+                }
+            }
+
+            // Generting points after mouse release
+            if primary_released {
+                // Computing bounds (considering multiple drag directions)
+                let (start, end) = (self.drag_start, self.drag_current);
+                let min_x = start.x.min(end.x);
+                let max_x = start.x.max(end.x);
+                let min_y = start.y.min(end.y);
+                let max_y = start.y.max(end.y);
+
+                // Choosing a spacing so not to create billions of particles and adding random jitter so not to get a completly uniform particle generation
+                let mut local_rng = rng();
+                let step = self.default_radius * 3.0;
+                let mut y = min_y;
+                while y <= max_y {
+                    let mut x = min_x;
+                    while x <= max_x {
+                        let jitter = Vec2::new(local_rng.random_range(-3.0..=3.0), local_rng.random_range(-3.0..=3.0));
+                        self.particles.push(Particle {
+                            position: Pos2::new(x, y) + jitter,
+                            velocity: Vec2::new(0.0, 0.0),
+                            radius: self.default_radius,
+                            mass: self.default_mass,
+                            color: self.default_color,
+                        });
+                        x += step;
+                    }
+                    y += step;
+                }
+                
+                // Clearing drag state
+                self.drag_start = Pos2::new(0.0, 0.0);
+                self.drag_current = Pos2::new(0.0, 0.0);
             }
         }
 
@@ -219,6 +292,14 @@ impl App for FluidSim {
             ui.horizontal(|ui| {
                 ui.label("Restitution Coefficient (e):");
                 ui.add(egui::Slider::new(&mut self.restitution, 0.0..=1.0));
+            });
+
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.spawn_mode, SpawnMode::Point, "Point");
+                ui.add_space(10.0);
+                ui.selectable_value(&mut self.spawn_mode, SpawnMode::Region, "Region");
+                ui.add_space(10.0);
+                ui.selectable_value(&mut self.spawn_mode, SpawnMode::Flow, "Flow");
             });
 
             // Drawing particles
