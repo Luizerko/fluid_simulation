@@ -185,70 +185,69 @@ impl App for FluidSim {
         let primary_down = ctx.input(|i| i.pointer.primary_down());
         let primary_released = ctx.input(|i| i.pointer.primary_released());
 
-        // Individually when clicking
-        if self.spawn_mode == SpawnMode::Point {
-            if primary_pressed {
-                if let Some(pos) = pointer {
-                    self.particles.push(Particle {
-                        position: Pos2::new(pos.x, pos.y),
-                        velocity: Vec2::new(0.0, 0.0),
-                        radius: self.default_radius,
-                        mass: self.default_mass,
-                        color: self.default_color,
-                    });
-                }
-            }
-        }
-
-        // By region selection
-        else if self.spawn_mode == SpawnMode::Region {
-            // Starting mouse capture
-            if primary_pressed {
-                if let Some(pos) = pointer {
-                    self.drag_start = pos;
-                    self.drag_current = pos;
-                }
-            }
-
-            // Updating mouse position
-            if primary_down {
-                if let Some(pos) = pointer {
-                    self.drag_current = pos;
-                }
-            }
-
-            // Generting points after mouse release
-            if primary_released {
-                // Computing bounds (considering multiple drag directions)
-                let (start, end) = (self.drag_start, self.drag_current);
-                let min_x = start.x.min(end.x);
-                let max_x = start.x.max(end.x);
-                let min_y = start.y.min(end.y);
-                let max_y = start.y.max(end.y);
-
-                // Choosing a spacing so not to create billions of particles and adding random jitter so not to get a completly uniform particle generation
-                let mut local_rng = rng();
-                let step = self.default_radius * 3.0;
-                let mut y = min_y;
-                while y <= max_y {
-                    let mut x = min_x;
-                    while x <= max_x {
-                        let jitter = Vec2::new(local_rng.random_range(-3.0..=3.0), local_rng.random_range(-3.0..=3.0));
+        // Avoiding spawning points on menu
+        if let Some(pos) = pointer {
+            if pos.x > 550.0 || pos.y > 130.0 {
+                // Individually when clicking
+                if self.spawn_mode == SpawnMode::Point {
+                    if primary_pressed {
                         self.particles.push(Particle {
-                            position: Pos2::new(x, y) + jitter,
+                            position: Pos2::new(pos.x, pos.y),
                             velocity: Vec2::new(0.0, 0.0),
                             radius: self.default_radius,
                             mass: self.default_mass,
                             color: self.default_color,
                         });
-                        x += step;
                     }
-                    y += step;
                 }
-                
-                // Clearing drag state
-                self.drag_start = Pos2::new(0.0, 0.0);
-                self.drag_current = Pos2::new(0.0, 0.0);
+
+                // By region selection
+                else if self.spawn_mode == SpawnMode::Region {
+                    // Starting mouse capture
+                    if primary_pressed {
+                        self.drag_start = pos;
+                        self.drag_current = pos;
+                    }
+
+                    // Updating mouse position
+                    if primary_down {
+                        self.drag_current = pos;
+                    }
+
+                    // Generting points after mouse release
+                    if primary_released {
+                        // Computing bounds (considering multiple drag directions)
+                        let (start, end) = (self.drag_start, self.drag_current);
+                        let min_x = start.x.min(end.x);
+                        let max_x = start.x.max(end.x);
+                        let min_y = start.y.min(end.y);
+                        let max_y = start.y.max(end.y);
+
+                        // Choosing a spacing so not to create billions of particles and adding random jitter so not to get a completly uniform particle generation
+                        let mut local_rng = rng();
+                        let step = self.default_radius * 3.0;
+                        let mut y = min_y;
+                        while y <= max_y {
+                            let mut x = min_x;
+                            while x <= max_x {
+                                let jitter = Vec2::new(local_rng.random_range(-3.0..=3.0), local_rng.random_range(-3.0..=3.0));
+                                self.particles.push(Particle {
+                                    position: Pos2::new(x, y) + jitter,
+                                    velocity: Vec2::new(0.0, 0.0),
+                                    radius: self.default_radius,
+                                    mass: self.default_mass,
+                                    color: self.default_color,
+                                });
+                                x += step;
+                            }
+                            y += step;
+                        }
+                        
+                        // Clearing drag state
+                        self.drag_start = Pos2::new(0.0, 0.0);
+                        self.drag_current = Pos2::new(0.0, 0.0);
+                    }
+                }
             }
         }
 
