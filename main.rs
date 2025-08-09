@@ -1,6 +1,9 @@
 use eframe::{egui, App, CreationContext, Frame, NativeOptions};
 use egui::{Pos2, Vec2, Color32, ViewportBuilder};
-use std::time::Duration;
+
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
+
 use rand::{Rng, rng};
 
 // Datas tructure for particles 
@@ -82,7 +85,11 @@ struct FluidSim {
     restitution: f32,
     spawn_mode: SpawnMode,
     drag_start: Pos2,
-    drag_current: Pos2
+    drag_current: Pos2,
+    last_frame: Instant,
+    fps: f32,
+    fps_accum_time: f32,
+    fps_accum_frames: u32,
 }
 
 impl FluidSim {
@@ -99,13 +106,17 @@ impl FluidSim {
             restitution: restitution,
             spawn_mode: SpawnMode::Point,
             drag_start: Pos2::new(0.0, 0.0),
-            drag_current: Pos2::new(0.0, 0.0)
+            drag_current: Pos2::new(0.0, 0.0),
+            last_frame: Instant::now(),
+            fps: 0.0,
+            fps_accum_time: 0.0,
+            fps_accum_frames: 0
         }
     }
 
-    // Implementing particle generation
-    fn generate_particles(&self, count: usize, width: f32, height: f32) -> Vec<Particle> {
-        let mut particles = Vec::with_capacity(count);
+    // Reseting random simulation
+    fn reset_random_sim(&mut self, count: usize, width: f32, height: f32) {
+        self.particles = Vec::with_capacity(count);
         let mut local_rng = rng();
 
         for _c in 0..count {
@@ -116,54 +127,86 @@ impl FluidSim {
                 mass: self.default_mass,
                 color: self.default_color
             };
-            particles.push(p);
+            self.particles.push(p);
         }
-
-        particles
     }
 
-    // Reseting simulation
-    fn reset_sim(&mut self, count: usize, width: f32, height: f32) {
-        self.particles = self.generate_particles(count, width, height);
+    // Reseting empty simulation
+    fn reset_empty_sim(&mut self) {
+        self.particles = Vec::new();
     }
 
     // Applying interactions with other particles
     fn handle_collisions(&mut self) {
-        // Loop over all particles (we'll make this better, of course)
-        for i in 0..self.particles.len() {
-            for j in (i+1)..self.particles.len() {
-                let (head, tail) = self.particles.split_at_mut(j);
-                let p1: &mut Particle = &mut head[i];
-                let p2: &mut Particle = &mut tail[0];
-                
-                // Compute collisions based on distance between centers and radius
-                let delta = p1.position - p2.position;
-                let dist_sq = delta.x*delta.x + delta.y*delta.y;
-                let radii_sum = p1.radius + p2.radius;  
-                
-                // Check for collision
-                if dist_sq < radii_sum * radii_sum {
-                    // Get the distance (with no division by zero) and compute the collision vector
-                    let dist = dist_sq.sqrt().max(1e-6);
-                    let n = delta/dist;
+        // Defining grid cell size 
+        let cell_size = 2.0 * self.default_radius;
 
-                    // Finding relative velocity, projecting it along collision vector and computing impulse magnitude (considering conservation of momentum)
-                    let v_rel = p1.velocity - p2.velocity;
-                    let v_rel_proj_n = v_rel.dot(n);
-                    
-                    let inv_m1 = 1.0/p1.mass;
-                    let inv_m2 = 1.0/p2.mass;
-                    let j = -(1.0+self.restitution) * v_rel_proj_n / (inv_m1+inv_m2);
+        // Building spatial hash grid: (cell_x, cell_y) -> list of particle indices
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
 
-                    // Updating velocities based on collision vector, impulse and particles' masses
-                    p1.velocity += n*inv_m1*j;
-                    p2.velocity += -n*inv_m2*j;
+        for idx in 0..self.particles.len() {
+            let p = &self.particles[idx];
+            let cell_x = (p.position.x/cell_size).floor() as i32;
+            let cell_y = (p.position.y/cell_size).floor() as i32;
+            grid.entry((cell_x, cell_y)).or_insert_with(Vec::new).push(idx);
+        }
 
-                    // Position correction to avoid overlapping particles
-                    let penetration = (radii_sum - dist).max(0.0);
-                    let correction = n * (penetration/(inv_m1 + inv_m2));
-                    p1.position += correction * inv_m1;
-                    p2.position -= correction * inv_m2;
+        // For each particle, testing only against neighbors in 3x3 neighborhood
+        for idx in 0..self.particles.len() {
+            let p1 = &self.particles[idx];
+            let cell_x = (p1.position.x/cell_size).floor() as i32;
+            let cell_y = (p1.position.y/cell_size).floor() as i32;
+
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    let neighbor_cell = (cell_x + dx, cell_y + dy);
+                    if let Some(candidates) = grid.get(&neighbor_cell) {
+                        for &j in candidates {
+                            // Avoiding updates we already made 
+                            if j <= idx {
+                                continue;
+                            }
+                            
+                            let (head, tail) = self.particles.split_at_mut(j);
+                            let p1_mut: &mut Particle = &mut head[idx];
+                            let p2_mut: &mut Particle = &mut tail[0];
+
+                            // Compute collisions based on distance between centers and radius
+                            let delta = p1_mut.position - p2_mut.position;
+                            let dist_sq = delta.x*delta.x + delta.y*delta.y;
+                            let radii_sum = p1_mut.radius + p2_mut.radius;  
+                            
+                            // Check for collision
+                            if dist_sq < radii_sum * radii_sum {
+                                // Get the distance (with no division by zero) and compute the collision vector
+                                let dist = dist_sq.sqrt().max(1e-6);
+                                let n = delta/dist;
+
+                                // Finding relative velocity, projecting it along collision vector and computing inverse mass
+                                let v_rel = p1_mut.velocity - p2_mut.velocity;
+                                let v_rel_proj_n = v_rel.dot(n);
+                                
+                                let inv_m1 = 1.0/p1_mut.mass;
+                                let inv_m2 = 1.0/p2_mut.mass;
+
+                                // Position correction to avoid overlapping particles
+                                let penetration = (radii_sum - dist).max(0.0);
+                                let correction = n * (penetration/(inv_m1 + inv_m2));
+                                p1_mut.position += correction * inv_m1;
+                                p2_mut.position -= correction * inv_m2;
+
+                                // If particles were already moving away, they just collided because of local interactions with other particles
+                                if v_rel_proj_n > 0.0 {
+                                    continue;
+                                }
+
+                                // Computing impulse magnitude (considering conservation of momentum) and updating velocities based on collision vector, impulse and particles' masses
+                                let j = -(1.0+self.restitution) * v_rel_proj_n / (inv_m1+inv_m2);
+                                p1_mut.velocity += n*inv_m1*j;
+                                p2_mut.velocity += -n*inv_m2*j;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -173,6 +216,20 @@ impl FluidSim {
 // Implementing window event loop
 impl App for FluidSim {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
+        // Computing real time between frames
+        let now = Instant::now();
+        let real_dt = (now - self.last_frame).as_secs_f32();
+        self.last_frame = now;
+
+        // Accumulating into a short window for a stable read
+        self.fps_accum_time += real_dt;
+        self.fps_accum_frames += 1;
+        if self.fps_accum_time >= 0.5 {
+            self.fps = self.fps_accum_frames as f32 / self.fps_accum_time;
+            self.fps_accum_time = 0.0;
+            self.fps_accum_frames = 0;
+        }
+        
         // Getting timestep
         let dt = ctx.input(|i| i.stable_dt);
 
@@ -225,12 +282,12 @@ impl App for FluidSim {
 
                         // Choosing a spacing so not to create billions of particles and adding random jitter so not to get a completly uniform particle generation
                         let mut local_rng = rng();
-                        let step = self.default_radius * 3.0;
+                        let step = self.default_radius * 2.0;
                         let mut y = min_y;
                         while y <= max_y {
                             let mut x = min_x;
                             while x <= max_x {
-                                let jitter = Vec2::new(local_rng.random_range(-3.0..=3.0), local_rng.random_range(-3.0..=3.0));
+                                let jitter = Vec2::new(local_rng.random_range(-2.0..=2.0), local_rng.random_range(-2.0..=2.0));
                                 self.particles.push(Particle {
                                     position: Pos2::new(x, y) + jitter,
                                     velocity: Vec2::new(0.0, 0.0),
@@ -255,10 +312,16 @@ impl App for FluidSim {
         egui::CentralPanel::default().show(ctx, |ui| {
             // General infos and buttons
             ui.horizontal(|ui| {
+                ui.label(format!("FPS: {:>5.1}", self.fps));
+                ui.add_space(20.0);
                 ui.label(format!("Number of Particles: {}", self.particles.len()));
                 ui.add_space(20.0);
-                if ui.button("Reset Simulation").clicked() {
-                    self.reset_sim(self.particles.len(), window_size.width(), window_size.height());
+                if ui.button("Reset Random Simulation").clicked() {
+                    self.reset_random_sim(self.particles.len(), window_size.width(), window_size.height());
+                }
+                ui.add_space(20.0);
+                if ui.button("Reset Empty Simulation").clicked() {
+                    self.reset_empty_sim();
                 }
             });
 
@@ -347,13 +410,11 @@ fn main() -> eframe::Result<()> {
         "Fluid Simulation",
         options,
         Box::new(|_cc: &CreationContext<'_>| {
-            let particle_count = 0;
-            let default_radius = 2.0;
-            let default_mass = 10.0;
+            let default_radius = 1.0;
+            let default_mass = 25.0;
             let default_color = Color32::from_rgb(35, 137, 218);
             let restitution = 0.4;
-            let mut sim = FluidSim::new_empty(default_radius, default_mass, default_color, restitution);
-            sim.reset_sim(particle_count, width, height);
+            let sim = FluidSim::new_empty(default_radius, default_mass, default_color, restitution);
             Ok(Box::new(sim))
         }),
     )
