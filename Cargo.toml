@@ -8,6 +8,12 @@ eframe = "0.32"
 egui = "0.32"
 rand = "0.9"
 
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
 [[bin]]
 name = "fluid_simulation"
 path = "main.rs"

@@ -9,6 +9,7 @@ use rand::{Rng, rng};
 // Datas tructure for particles 
 struct Particle {
     position: Pos2,
+    prev_position: Pos2,
     velocity: Vec2,
     radius: f32,
     mass: f32,
@@ -21,14 +22,21 @@ trait Physics {
     fn update_properties(&mut self, radius: f32, color: Color32);
 }
 
-// Implementing physics dynamics for the particles
+// Implementing physics dynamics for the particles using position-Verlet
 impl Physics for Particle {
     fn update_position(&mut self, dt: f32, g: f32, e: f32, bounds: egui::Rect) {
         // Applying gravity in pixels/s²
-        self.velocity.y += g * dt;
+        let a = Vec2::new(0.0, g);
+        
+        // Update equation: x_{n+1} = 2 x_n - x_{n-1} + a dt^2
+        let x_prev = self.prev_position;
+        let x_curr = self.position;
+        let x_next = x_curr + (x_curr - x_prev) + a * (dt * dt);
+        self.prev_position = x_curr;
+        self.position = x_next;
 
-        // Updating positions
-        self.position += self.velocity*dt;
+        // Update velocity equation at time t_n (O(dt^2)): v_n ≈ (x_{n+1} - x_{n-1}) / (2 dt)
+        self.velocity = (self.position - x_prev) * (0.5 / dt);
 
         // Overlapping with the wall check variables
         let left_overlap = self.position.x - self.radius;
@@ -54,6 +62,9 @@ impl Physics for Particle {
             self.velocity.y = -e*self.velocity.y;
             self.position.y -= bot_overlap;
         }
+
+        // Keeping Verlet state (previous step) consistent with wall collision with (position - prev_position)/dt == velocity
+        self.prev_position = self.position - self.velocity * dt;
     }
 
     // Updating properties of particles
@@ -122,15 +133,26 @@ impl FluidSim {
         }
     }
 
+    // Helper function to bootstrap prev_position for a new particle (x_{-1})
+    fn bootstrap_prev_position(pos: Pos2, vel: Vec2, dt: f32, g: f32) -> Pos2 {
+        // x(t - dt) = x(t) - v(t) dt + 1/2 a dt^2
+        let a = Vec2::new(0.0, g);
+        pos - vel * dt + a * (0.5 * dt * dt)
+    }
+
     // Reseting random simulation
     fn reset_random_sim(&mut self, count: usize, width: f32, height: f32) {
         self.particles = Vec::with_capacity(count);
         let mut local_rng = rng();
 
         for _c in 0..count {
+            let position = Pos2::new(local_rng.random_range(0.0..width), local_rng.random_range(0.0..height));
+            let velocity = Vec2::new(0.0, 0.0);
+            let prev_position = Self::bootstrap_prev_position(position, velocity, self.default_phys_dt, self.default_g);
             let p = Particle {
-                position: Pos2::new(local_rng.random_range(0.0..width), local_rng.random_range(0.0..height)),
-                velocity: Vec2::new(0.0, 0.0),
+                position,
+                prev_position,
+                velocity,
                 radius: self.default_radius,
                 mass: self.default_mass,
                 color: self.default_color
@@ -145,7 +167,7 @@ impl FluidSim {
     }
 
     // Applying interactions with other particles
-    fn handle_collisions(&mut self) {
+    fn handle_collisions(&mut self, dt: f32) {
         // Defining grid cell size 
         let cell_size = 2.0 * self.default_radius;
 
@@ -212,6 +234,10 @@ impl FluidSim {
                                 let j = -(1.0+self.restitution) * v_rel_proj_n / (inv_m1+inv_m2);
                                 p1_mut.velocity += n*inv_m1*j;
                                 p2_mut.velocity += -n*inv_m2*j;
+                            
+                                // Keeping Verlet state (previous step) consistent with new v again
+                                p1_mut.prev_position = p1_mut.position - p1_mut.velocity * dt;
+                                p2_mut.prev_position = p2_mut.position - p2_mut.velocity * dt;
                             }
                         }
                     }
@@ -227,7 +253,7 @@ impl FluidSim {
             p.update_position(dt, self.default_g, self.restitution, bounds);
         }
         // Handling collisions with other particles
-        self.handle_collisions();
+        self.handle_collisions(dt);
     }
 }
 
@@ -260,13 +286,17 @@ impl App for FluidSim {
 
         // Avoiding spawning points on menu
         if let Some(pos) = pointer {
-            if pos.x > 550.0 || pos.y > 130.0 {
+            if pos.x > 580.0 || pos.y > 150.0 {
                 // Individually when clicking
                 if self.spawn_mode == SpawnMode::Point {
                     if primary_pressed {
+                        let position = Pos2::new(pos.x, pos.y);
+                        let velocity = Vec2::new(0.0, 0.0);
+                        let prev_position = FluidSim::bootstrap_prev_position(position, velocity, self.default_phys_dt, self.default_g);
                         self.particles.push(Particle {
-                            position: Pos2::new(pos.x, pos.y),
-                            velocity: Vec2::new(0.0, 0.0),
+                            position,
+                            prev_position,
+                            velocity,
                             radius: self.default_radius,
                             mass: self.default_mass,
                             color: self.default_color,
@@ -304,9 +334,13 @@ impl App for FluidSim {
                             let mut x = min_x;
                             while x <= max_x {
                                 let jitter = Vec2::new(local_rng.random_range(-2.0..=2.0), local_rng.random_range(-2.0..=2.0));
+                                let position = Pos2::new(x, y) + jitter;
+                                let velocity = Vec2::new(0.0, 0.0);
+                                let prev_position = FluidSim::bootstrap_prev_position(position, velocity, self.default_phys_dt, self.default_g);
                                 self.particles.push(Particle {
-                                    position: Pos2::new(x, y) + jitter,
-                                    velocity: Vec2::new(0.0, 0.0),
+                                    position,
+                                    prev_position,
+                                    velocity,
                                     radius: self.default_radius,
                                     mass: self.default_mass,
                                     color: self.default_color,
@@ -347,7 +381,7 @@ impl App for FluidSim {
                 ui.add(egui::Slider::new(&mut self.default_radius, 1.0..=5.0));
                 ui.add_space(10.0);
                 ui.label("Gravity (pixels/s²):");
-                ui.add(egui::Slider::new(&mut self.default_g, 100.0..=600.0));
+                ui.add(egui::Slider::new(&mut self.default_g, 400.0..=1200.0));
             });
 
             // Particle color sliders
@@ -429,11 +463,11 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|_cc: &CreationContext<'_>| {
             let default_phys_dt = 1.0/30.0;
-            let default_g = 300.0;
+            let default_g = 800.0;
             let default_radius = 2.0;
             let default_mass = 25.0;
             let default_color = Color32::from_rgb(35, 137, 218);
-            let restitution = 0.6;
+            let restitution = 0.5;
             let sim = FluidSim::new_empty(default_phys_dt, default_g, default_radius, default_mass, default_color, restitution);
             Ok(Box::new(sim))
         }),
