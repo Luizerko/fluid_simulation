@@ -128,8 +128,8 @@ impl FluidSim {
             fps_accum_time: 0.0,
             fps_accum_frames: 0,
             accumulator: 0.0,
-            max_substeps: 32,
-            max_frame_dt: 0.1
+            max_substeps: 60,
+            max_frame_dt: 0.05
         }
     }
 
@@ -278,6 +278,22 @@ impl App for FluidSim {
         // Getting window information
         let window_size: egui::Rect = ctx.screen_rect();
 
+        // Fixed-step physics loop
+        let mut steps = 0u32;
+        while self.accumulator >= self.default_phys_dt && steps < self.max_substeps {
+            self.physics_step(self.default_phys_dt, window_size);
+            self.accumulator -= self.default_phys_dt;
+            steps += 1;
+        }
+        
+        // Dropping leftover time to keep UI responsive if we hit the step cap 
+        if steps == self.max_substeps {
+            self.accumulator = 0.0;
+        }
+
+        // Interpolation factor for rendering between the last completed step and the next
+        let alpha = (self.accumulator / self.default_phys_dt).clamp(0.0, 1.0);
+
         // Spawning points
         let pointer = ctx.pointer_interact_pos();
         let primary_pressed = ctx.input(|i| i.pointer.primary_pressed());
@@ -362,7 +378,7 @@ impl App for FluidSim {
         egui::CentralPanel::default().show(ctx, |ui| {
             // General infos and buttons
             ui.horizontal(|ui| {
-                ui.label(format!("FPS: {:>5.1}", self.fps));
+                ui.label(format!("FPS: {:>5.2}", self.fps));
                 ui.add_space(20.0);
                 ui.label(format!("Number of Particles: {}", self.particles.len()));
                 ui.add_space(20.0);
@@ -381,7 +397,7 @@ impl App for FluidSim {
                 ui.add(egui::Slider::new(&mut self.default_radius, 1.0..=5.0));
                 ui.add_space(10.0);
                 ui.label("Gravity (pixels/s²):");
-                ui.add(egui::Slider::new(&mut self.default_g, 400.0..=1200.0));
+                ui.add(egui::Slider::new(&mut self.default_g, 500.0..=5000.0).step_by(500.0));
             });
 
             // Particle color sliders
@@ -418,8 +434,8 @@ impl App for FluidSim {
             let painter = ui.painter();
             let mut shapes = Vec::with_capacity(self.particles.len());
             for p in &self.particles {
-                //painter.circle_filled(p.position, p.radius, p.color);
-                shapes.push(egui::Shape::circle_filled(p.position, p.radius, p.color));
+                let interp = p.prev_position + (p.position - p.prev_position) * alpha;
+                shapes.push(egui::Shape::circle_filled(interp, p.radius, p.color));
             }
             painter.extend(shapes);
         });
@@ -431,19 +447,6 @@ impl App for FluidSim {
                 // Updating properties
                 p.update_properties(self.default_radius, self.default_color);
             }
-        }
-        
-        // Fixed-step physics loop
-        let mut steps = 0u32;
-        while self.accumulator >= self.default_phys_dt && steps < self.max_substeps {
-            self.physics_step(self.default_phys_dt, window_size);
-            self.accumulator -= self.default_phys_dt;
-            steps += 1;
-        }
-        
-        // Dropping leftover time to keep UI responsive if we hit the step cap 
-        if steps == self.max_substeps {
-            self.accumulator = 0.0;
         }
 
         // Breaking the reactive mode and running simulation at 60 FPS 
@@ -463,7 +466,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|_cc: &CreationContext<'_>| {
             let default_phys_dt = 1.0/30.0;
-            let default_g = 800.0;
+            let default_g = 2500.0;
             let default_radius = 2.0;
             let default_mass = 25.0;
             let default_color = Color32::from_rgb(35, 137, 218);
