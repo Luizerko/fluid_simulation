@@ -19,6 +19,7 @@ struct Particle {
 // Physics trait
 trait Physics {
     fn update_position(&mut self, dt: f32, g:f32, e: f32, bounds: egui::Rect);
+    fn project_to_bounds(&mut self, dt: f32, e: f32, bounds: egui::Rect);
     fn update_properties(&mut self, radius: f32, color: Color32);
 }
 
@@ -38,28 +39,46 @@ impl Physics for Particle {
         // Update velocity equation at time t_n (O(dt^2)): v_n ≈ (x_{n+1} - x_{n-1}) / (2 dt)
         self.velocity = (self.position - x_prev) * (0.5 / dt);
 
+        self.project_to_bounds(dt, e, bounds);
+    }
+
+    // Projecting particles back to bounds
+    fn project_to_bounds(&mut self, dt: f32, e: f32, bounds: egui::Rect) {
         // Overlapping with the wall check variables
         let left_overlap = self.position.x - self.radius;
         let right_overlap = self.position.x + self.radius - bounds.width();
         let top_overlap = self.position.y - self.radius;
         let bot_overlap = self.position.y + self.radius - bounds.height();
 
-        // Treating wall collisions (elastic for now)
+        // Implementing bouncing threshold to avoid flickering on cluttered collisions
+        let bouncing_threshold = 10.0;
+        let e_x = if self.velocity.x.abs() > bouncing_threshold {
+            e
+        } else {
+            0.0
+        };
+        let e_y = if self.velocity.y.abs() > bouncing_threshold {
+            e
+        } else {
+            0.0
+        };
+
+        // Treating wall collisions
         if left_overlap < 0.0 {
-            self.velocity.x = -e*self.velocity.x;
-            self.position.x += left_overlap.abs();
+            self.velocity.x = -e_x*self.velocity.x;
+            self.position.x -= left_overlap;
         }
         else if right_overlap > 0.0 {
-            self.velocity.x = -e*self.velocity.x;
+            self.velocity.x = -e_x*self.velocity.x;
             self.position.x -= right_overlap;
         }
         
         if top_overlap < 0.0 {
-            self.velocity.y = -e*self.velocity.y;
-            self.position.y += top_overlap.abs();
+            self.velocity.y = -e_y*self.velocity.y;
+            self.position.y -= top_overlap;
         }
         else if bot_overlap > 0.0 {
-            self.velocity.y = -e*self.velocity.y;
+            self.velocity.y = -e_y*self.velocity.y;
             self.position.y -= bot_overlap;
         }
 
@@ -197,6 +216,18 @@ impl FluidSim {
                                 continue;
                             }
                             
+                            // let (p1_mut, p2_mut) = if j > idx {
+                            //     let (head, tail) = self.particles.split_at_mut(j);
+                            //     (&mut head[idx], &mut tail[0])    
+                            // }
+                            // else if j < idx {
+                            //     let (head, tail) = self.particles.split_at_mut(idx);
+                            //     (&mut tail[0], &mut head[j])
+                            // }
+                            // else {
+                            //     continue;
+                            // };
+
                             let (head, tail) = self.particles.split_at_mut(j);
                             let p1_mut: &mut Particle = &mut head[idx];
                             let p2_mut: &mut Particle = &mut tail[0];
@@ -229,9 +260,17 @@ impl FluidSim {
                                 if v_rel_proj_n > 0.0 {
                                     continue;
                                 }
+                                
+                                // Implementing bouncing threshold to avoid flickering on cluttered collisions
+                                let bouncing_threshold = 10.0;
+                                let e = if (-v_rel_proj_n).max(0.0) > bouncing_threshold {
+                                    self.restitution
+                                } else {
+                                    0.0
+                                };
 
                                 // Computing impulse magnitude (considering conservation of momentum) and updating velocities based on collision vector, impulse and particles' masses
-                                let j = -(1.0+self.restitution) * v_rel_proj_n / (inv_m1+inv_m2);
+                                let j = -(1.0+e) * v_rel_proj_n / (inv_m1+inv_m2);
                                 p1_mut.velocity += n*inv_m1*j;
                                 p2_mut.velocity += -n*inv_m2*j;
                             
@@ -252,8 +291,14 @@ impl FluidSim {
         for p in &mut self.particles {
             p.update_position(dt, self.default_g, self.restitution, bounds);
         }
+
         // Handling collisions with other particles
         self.handle_collisions(dt);
+
+        // Handling wall collisions again to avoid overlapping particles and flickering
+        for p in &mut self.particles {
+            p.project_to_bounds(dt, self.restitution, bounds)
+        } 
     }
 }
 
@@ -269,7 +314,7 @@ impl App for FluidSim {
         // Accumulating into a short window for a stable read
         self.fps_accum_time += real_dt;
         self.fps_accum_frames += 1;
-        if self.fps_accum_time >= 0.5 {
+        if self.fps_accum_time >= 0.2 {
             self.fps = self.fps_accum_frames as f32 / self.fps_accum_time;
             self.fps_accum_time = 0.0;
             self.fps_accum_frames = 0;
@@ -394,7 +439,7 @@ impl App for FluidSim {
             // Particle radius slider and mass slider
             ui.horizontal(|ui| {
                 ui.label("Radius:");
-                ui.add(egui::Slider::new(&mut self.default_radius, 1.0..=5.0));
+                ui.add(egui::Slider::new(&mut self.default_radius, 2.0..=6.0));
                 ui.add_space(10.0);
                 ui.label("Gravity (pixels/s²):");
                 ui.add(egui::Slider::new(&mut self.default_g, 500.0..=5000.0).step_by(500.0));
@@ -467,7 +512,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|_cc: &CreationContext<'_>| {
             let default_phys_dt = 1.0/30.0;
             let default_g = 2500.0;
-            let default_radius = 2.0;
+            let default_radius = 3.0;
             let default_mass = 25.0;
             let default_color = Color32::from_rgb(35, 137, 218);
             let restitution = 0.5;
