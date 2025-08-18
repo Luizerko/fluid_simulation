@@ -298,7 +298,7 @@ impl FluidSim {
         // Handling wall collisions again to avoid overlapping particles and flickering
         for p in &mut self.particles {
             p.project_to_bounds(dt, self.restitution, bounds)
-        } 
+        }
     }
 }
 
@@ -394,7 +394,7 @@ impl App for FluidSim {
                         while y <= max_y {
                             let mut x = min_x;
                             while x <= max_x {
-                                let jitter = Vec2::new(local_rng.random_range(-2.0..=2.0), local_rng.random_range(-2.0..=2.0));
+                                let jitter = Vec2::new(local_rng.random_range(-self.default_radius*0.8..=self.default_radius*0.8), local_rng.random_range(-self.default_radius*0.8..=self.default_radius*0.8));
                                 let position = Pos2::new(x, y) + jitter;
                                 let velocity = Vec2::new(0.0, 0.0);
                                 let prev_position = FluidSim::bootstrap_prev_position(position, velocity, self.default_phys_dt, self.default_g);
@@ -411,6 +411,64 @@ impl App for FluidSim {
                             y += step;
                         }
                         
+                        // Clearing drag state
+                        self.drag_start = Pos2::new(0.0, 0.0);
+                        self.drag_current = Pos2::new(0.0, 0.0);
+                    }
+                }
+
+                // Flow selection
+                else if self.spawn_mode == SpawnMode::Flow {
+                    // Starting mouse capture
+                    if primary_pressed {
+                        self.drag_start = pos;
+                        self.drag_current = pos;
+                    }
+
+                    // Updating mouse position and generating stream of particles
+                    if primary_down {
+                        self.drag_current = pos;
+
+                        // Flow direction and norm
+                        let d = self.drag_current - self.drag_start;
+                        let dist = (d.x * d.x + d.y * d.y).sqrt();
+                        let dir = d / dist;
+
+                        if dist > 1e-3 {
+                            let flow_rate = 250.0;
+                            let flow_gain = 2.0;
+                            let flow_max_speed = 450.0;
+                            
+                            // Mapping distance to speed with gain and clamp (px/s)
+                            let speed = (dist*flow_gain).min(flow_max_speed);
+                            
+                            if speed > 50.0 {
+                                // Framerate-independent emission
+                                let to_emit = (flow_rate*real_dt).floor() as u32;
+
+                                // Emitting N particles at the origin with a little jitter
+                                if to_emit > 0 {
+                                    let mut local_rng = rng();
+                                    for _ in 0..to_emit {
+                                        let jitter = Vec2::new(local_rng.random_range(-self.default_radius*0.8..=self.default_radius*0.8), local_rng.random_range(-self.default_radius*0.8..=self.default_radius*0.8));
+                                        let position = self.drag_start + jitter;
+                                        let velocity = dir*speed;
+                                        let prev_position = FluidSim::bootstrap_prev_position(position, velocity, self.default_phys_dt, self.default_g);
+                                        self.particles.push(Particle {
+                                            position,
+                                            prev_position,
+                                            velocity,
+                                            radius: self.default_radius,
+                                            mass: self.default_mass,
+                                            color: self.default_color,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if primary_released {
                         // Clearing drag state
                         self.drag_start = Pos2::new(0.0, 0.0);
                         self.drag_current = Pos2::new(0.0, 0.0);
@@ -442,7 +500,7 @@ impl App for FluidSim {
                 ui.add(egui::Slider::new(&mut self.default_radius, 2.0..=6.0));
                 ui.add_space(10.0);
                 ui.label("Gravity (pixels/s²):");
-                ui.add(egui::Slider::new(&mut self.default_g, 500.0..=5000.0).step_by(500.0));
+                ui.add(egui::Slider::new(&mut self.default_g, 200.0..=1000.0).step_by(100.0));
             });
 
             // Particle color sliders
@@ -511,7 +569,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|_cc: &CreationContext<'_>| {
             let default_phys_dt = 1.0/30.0;
-            let default_g = 2500.0;
+            let default_g = 500.0;
             let default_radius = 3.0;
             let default_mass = 25.0;
             let default_color = Color32::from_rgb(35, 137, 218);
